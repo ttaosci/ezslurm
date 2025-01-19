@@ -1,11 +1,12 @@
-import logging
 import subprocess
 import time
+from abc import ABC, abstractmethod
 from enum import Enum
 
 from ezslurm.config import SlurmConfig
+from ezslurm.utils import get_logger, setup_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 
 DEFAULT_SLURM_CONFIG = SlurmConfig(
@@ -31,15 +32,50 @@ class Status(Enum):
     DONE = "done"
 
 
-class Job:
-    """Job class for normal bash job"""
-
-    def __init__(self, command, job_id, **kwargs):
-        if isinstance(command, list):
+class Job(ABC):
+    def __init__(self, command, job_id):
+        if isinstance(command, list) and isinstance(command[0], str):
             command = f"bash -c \"{'; '.join(command)}\""
         self.command = command
         self.job_id = job_id
         self.status = Status.INIT
+        self.stdout = ""
+        self.stderr = ""
+
+    @abstractmethod
+    def submit(self):
+        # Submit a job and change the status to RUNNING
+        raise NotImplementedError("submit() is not implemented")
+
+    @abstractmethod
+    def update_status(self):
+        # Update the status of the job
+        raise NotImplementedError("update_status() is not implemented")
+
+
+class ForegroundJob(Job):
+    def __init__(self, command, job_id, **kwargs):
+        super().__init__(command, job_id)
+
+    def submit(self):
+        self.status = Status.RUNNING
+        result = subprocess.run(
+            self.command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.stdout = result.stdout.decode("utf-8")
+        self.stderr = result.stderr.decode("utf-8")
+        self.status = Status.DONE
+
+    def update_status(self):
+        pass
+
+
+class BackgroundJob(Job):
+    def __init__(self, command, job_id, **kwargs):
+        super().__init__(command, job_id)
         self.process = None
 
     def submit(self):
@@ -62,56 +98,27 @@ class Job:
                     stderr.decode("utf-8"),
                 )
             except UnicodeDecodeError:
-                self.stdout, self.stderr = "", ""
+                logger.warning("Failed to decode stdout/stderr")
 
 
-class SlurmRunJob(Job):
-    """Job class for srun job"""
-
-    def __init__(self, command, job_id, slurm_config=None):
+class SlurmJob(ForegroundJob):
+    def __init__(self, command, job_id, slurm_config):
         super().__init__(command, job_id)
-
-        if slurm_config is None:
-            logger.warning("Slurm config is not provided. Use default config.")
-            slurm_config = DEFAULT_SLURM_CONFIG
-
-        self.slurm_config = slurm_config
-        self.command = slurm_config.command(
-            self.command,
-            sbatch=False,
-        )
-
-
-class SlurmBatchJob(Job):
-    """Job class for sbatch job"""
-
-    def __init__(self, command, job_id, slurm_config=None):
-        super().__init__(command, job_id)
-
-        if slurm_config is None:
-            logger.warning("Slurm config is not provided. Use default config.")
-            slurm_config = DEFAULT_SLURM_CONFIG
-
         self.slurm_config = slurm_config
         self.command = self.slurm_config.command(
             self.command,
             sbatch=True,
         )
 
-        # The job ID assigned by slurm
+        # The slurm job ID assigned by slurm during submit()
         self.slurm_job_id = None
 
     def submit(self):
-        result = subprocess.run(
-            self.command,
-            shell=True,
-            stdout=subprocess.PIPE,
-        )
-        # E.g., "Submitted batch job 6449881"
-        stdout = result.stdout.decode("utf-8")
-        assert "Submitted batch job" in stdout
-        self.slurm_job_id = int(stdout.split(" ")[3])
+        super().submit()
         self.status = Status.RUNNING
+        # E.g., "Submitted batch job 6449881"
+        assert "Submitted batch job" in self.stdout
+        self.slurm_job_id = int(self.stdout.split(" ")[3])
 
     def update_status(self):
         if self.slurm_job_id is not None:
@@ -130,7 +137,50 @@ class SlurmBatchJob(Job):
                 self.status = Status.DONE
 
 
+class SequentialJob(Job):
+    def __init__(self, command, job_id, **kwargs):
+        # In sequential mode, command should be an iterable of commands
+        super().__init__(command, job_id)
+        self.slurm_config = kwargs.get("slurm_config", None)
+        self.job_cls = (
+            SlurmJob if self.slurm_config is not None else BackgroundJob
+        )
+
+        self.stdout = []
+        self.stderr = []
+
+        # Current job that is running
+        self.curr_job = None
+
+    def get_next_job(self):
+        return self.job_cls(
+            next(self.command), self.job_id, slurm_config=self.slurm_config
+        )
+
+    def submit(self):
+        self.curr_job = self.get_next_job()
+        self.curr_job.submit()
+        self.status = Status.RUNNING
+
+    def update_status(self):
+        self.curr_job.update_status()
+        if self.curr_job.status == Status.DONE:
+            self.stdout.append(self.curr_job.stdout)
+            self.stderr.append(self.curr_job.stderr)
+            try:
+                self.curr_job = self.get_next_job()
+                self.curr_job.submit()
+            except StopIteration:
+                self.status = Status.DONE
+
+
 class JobManager:
+    JOB_CLASSES = {
+        "bash": BackgroundJob,
+        "slurm": SlurmJob,
+        "sequential": SequentialJob,
+    }
+
     def __init__(self, max_run_jobs, wait_sec=10):
         self.max_run_jobs = max_run_jobs
         self.wait_sec = wait_sec
@@ -141,22 +191,17 @@ class JobManager:
 
     def add_job(self, command, mode="bash", slurm_config=None):
         job_id = len(self.todo_list)
-        if mode == "bash":
-            job = Job(command, job_id)
-        elif mode == "srun":
-            job = SlurmRunJob(command, job_id, slurm_config=slurm_config)
-        elif mode == "sbatch":
-            job = SlurmBatchJob(command, job_id, slurm_config=slurm_config)
-        else:
-            raise NotImplementedError(f"Invalid mode: {mode}")
+        job = self.JOB_CLASSES[mode](
+            command, job_id, slurm_config=slurm_config
+        )
         self.todo_list.append(job)
 
     def run_once(self):
-        progress = None
+        progress_msg = ""
         while len(self.todo_list) > 0 or len(self.active_list) > 0:
-            if progress != self.progress:
-                progress = self.progress
-                logger.info(progress)
+            if progress_msg != self.progress_msg:
+                progress_msg = self.progress_msg
+                logger.info(progress_msg)
             self.assign_jobs()
             time.sleep(self.wait_sec)
             self.update_jobs()
@@ -181,38 +226,57 @@ class JobManager:
             job.update_status()
             if job.status == Status.DONE:
                 logger.info(f"Job-{job.job_id} done")
+                logger.debug(f"Job-{job.job_id} stdout: {job.stdout}")
+                logger.debug(f"Job-{job.job_id} stderr: {job.stderr}")
                 done_list.append(job)
         for job in done_list:
             self.active_list.remove(job)
         self.done_list.extend(done_list)
 
     @property
-    def progress(self):
+    def progress_msg(self):
         return f"todo/active/done jobs: {len(self.todo_list)}/{len(self.active_list)}/{len(self.done_list)}"
 
 
 if __name__ == "__main__":
+    import logging
     import random
 
     from ezslurm.utils import setup_logger
 
-    setup_logger()
+    setup_logger(stream_level=logging.DEBUG)
 
     manager = JobManager(max_run_jobs=2)
 
-    # Add sample jobs (replace with your actual shell commands)
-    for i in range(3):
-        command = (
-            f"echo 'Executing Task {i + 1}' && sleep {random.randint(1, 10)}"
-        )
-        if i % 3 == 0:
-            # Randomly fail some jobs
-            command += " && printf 'failed :(' >&2 && exit 1"
+    test_sequential = False
+    if test_sequential:
+
+        def command_gen(start, end):
+            for i in range(start, end):
+                yield f"echo 'Executing Task {i + 1}' && sleep {random.randint(1, 10)}"
+
         manager.add_job(
-            command,
-            mode="srun",
-            slurm_config=SlurmConfig(job_name=f"task_{i}"),
+            command_gen(0, 3),
+            mode="sequential",
+            # slurm_config=SlurmConfig(job_name=f"task_{i}"),
         )
+        manager.add_job(
+            command_gen(3, 6),
+            mode="sequential",
+            # slurm_config=SlurmConfig(job_name=f"task_{i}"),
+        )
+    else:
+        # Add sample jobs (replace with your actual shell commands)
+        for i in range(3):
+            command = f"echo 'Executing Task {i + 1}' && sleep {random.randint(1, 10)}"
+            if i % 3 == 0:
+                # Randomly fail some jobs
+                command += " && printf 'failed :(' >&2 && exit 1"
+            manager.add_job(
+                command,
+                mode="slurm",
+                slurm_config=SlurmConfig(job_name=f"task_{i}"),
+            )
 
     # Run the job manager
     manager.run(num_run=1)

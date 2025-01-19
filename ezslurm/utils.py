@@ -1,6 +1,10 @@
 import logging
 
 
+def get_logger():
+    return logging.getLogger("ezslurm")
+
+
 def setup_logger(
     filename=None,
     file_level=logging.INFO,
@@ -8,6 +12,9 @@ def setup_logger(
     fmt="[%(levelname).1s] %(asctime)s | %(filename)s:%(lineno)d | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 ):
+    logger = get_logger()
+
+    logger.setLevel(stream_level)
     formatter = logging.Formatter(fmt, datefmt=datefmt)
     file_handler = (
         logging.FileHandler(filename, mode="w")
@@ -18,11 +25,6 @@ def setup_logger(
     file_handler.setLevel(file_level)
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(stream_level)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format=fmt,
-        datefmt=datefmt,
-        handlers=[file_handler, stream_handler],
-    )
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
