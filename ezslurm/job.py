@@ -181,8 +181,8 @@ class JobManager:
         "sequential": SequentialJob,
     }
 
-    def __init__(self, max_run_jobs, wait_sec=10):
-        self.max_run_jobs = max_run_jobs
+    def __init__(self, max_concurrent_jobs, wait_sec=10):
+        self.max_concurrent_jobs = max_concurrent_jobs
         self.wait_sec = wait_sec
 
         self.todo_list = []
@@ -213,7 +213,7 @@ class JobManager:
     def assign_jobs(self):
         while (
             len(self.todo_list) > 0
-            and len(self.active_list) < self.max_run_jobs
+            and len(self.active_list) < self.max_concurrent_jobs
         ):
             job = self.todo_list.pop(0)
             job.submit()
@@ -246,13 +246,13 @@ if __name__ == "__main__":
 
     setup_logger(stream_level=logging.DEBUG)
 
-    manager = JobManager(max_run_jobs=2)
+    manager = JobManager(max_concurrent_jobs=2)
 
     test_sequential = False
     if test_sequential:
 
-        def command_gen(start, end):
-            for i in range(start, end):
+        def command_gen(begin, end):
+            for i in range(begin, end):
                 yield f"echo 'Executing Task {i + 1}' && sleep {random.randint(1, 10)}"
 
         manager.add_job(
