@@ -1,4 +1,5 @@
 # Author: Tao Tu (tt582@cornell.edu)
+import copy
 
 import omegaconf
 
@@ -26,6 +27,11 @@ class SlurmConfig:
 
     def update(self, **kwargs):
         self.kwargs.update(kwargs)
+
+    def new(self, **kwargs):
+        new_cfg = copy.deepcopy(self)
+        new_cfg.update(**kwargs)
+        return new_cfg
 
     def __repr__(self):
         key_vals = [f"{k}={v}" for k, v in self.kwargs.items()]
@@ -77,4 +83,8 @@ if __name__ == "__main__":
 
     yaml_path = "config/gpu.yaml"
     cfg = SlurmConfig.from_yaml(yaml_path)
+    print(cfg)
+
+    cfg_new = cfg.new(job_name="new_job")
+    print(cfg_new)
     print(cfg)
