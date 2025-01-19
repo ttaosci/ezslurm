@@ -9,7 +9,7 @@ def setup_logger(
     filename=None,
     file_level=logging.INFO,
     stream_level=logging.INFO,
-    fmt="[%(levelname).1s] %(asctime)s | %(filename)s:%(lineno)d | %(message)s",
+    fmt="[%(levelname).1s] ezslurm | %(asctime)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 ):
     logger = get_logger()
