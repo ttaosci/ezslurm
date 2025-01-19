@@ -1,5 +1,7 @@
 # Author: Tao Tu (tt582@cornell.edu)
 
+import omegaconf
+
 
 def format_key(k):
     # Change key format
@@ -59,6 +61,10 @@ class SlurmConfig:
             cmd += f" {core_cmd}"
         return cmd
 
+    @classmethod
+    def from_yaml(cls, fpath):
+        return cls(**omegaconf.OmegaConf.load(fpath))
+
 
 if __name__ == "__main__":
     cfg = SlurmConfig(ntasks_per_node=1, cpus_per_task=4)
@@ -68,3 +74,7 @@ if __name__ == "__main__":
     print(cfg.command(commands, sbatch=False))
     print(cfg.command(commands, sbatch=True))
     print(cfg.command(commands, sbatch=True, fpath="tmp.slurm"))
+
+    yaml_path = "config/gpu.yaml"
+    cfg = SlurmConfig.from_yaml(yaml_path)
+    print(cfg)
