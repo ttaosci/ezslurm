@@ -4,8 +4,14 @@
 ```python
 import ezslurm
 
-# Slurm configuration using python
+# Slurm configuration
 cfg = ezslurm.SlurmConfig(job_name="ezslurm_demo", nodes=1, time="0-00:10:00")
+# Or from a yaml file
+cfg = ezslurm.SlurmConfig.from_yaml("config/cpu.yaml")
+# Update certain fields
+cfg.update(cpus_per_task=32, mem="128g")
+# Clone and change fields
+new_cfg = cfg.new(cpus_per_task=8, mem="64g")
 
 # Easy to create slurm command
 srun_cmd = cfg.command(["echo hello", "sleep 5"], sbatch=False)
