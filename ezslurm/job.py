@@ -9,23 +9,6 @@ from ezslurm.utils import get_logger, setup_logger
 logger = get_logger()
 
 
-DEFAULT_SLURM_CONFIG = SlurmConfig(
-    job_name="default",
-    output=None,
-    error=None,
-    nodes=1,
-    ntasks_per_node=1,
-    cpus_per_task=1,
-    mem="16g",
-    time="1-00:00:00",
-    partition=None,
-    gres=None,
-    export=None,
-    exclude=None,
-    nodelist=None,
-)
-
-
 class Status(Enum):
     INIT = "init"
     RUNNING = "running"
